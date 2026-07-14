@@ -1,0 +1,17 @@
+node_modules
+dist
+.env.local
+.env
+.DS_Store
+convex/_generated
+.convex
+.npm-cache
+.playwright-browsers
+.vercel
+.vercel-cache
+.vercel-home
+*.tsbuildinfo
+feathers-live-data.json
+feathers-*.json
+feathers-*.csv
+.vercel
