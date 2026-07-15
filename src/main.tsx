@@ -167,6 +167,8 @@ const initialPeople: Person[] = [
   { id: "hot-press", name: "Hot Off The Press", kind: "showcase" },
 ];
 
+const defaultBlankEventBandMemberIds = ["rich", "vish"];
+
 const initialEvent: JamEvent = {
   id: "2026-05-05",
   date: "2026-05-05",
@@ -397,12 +399,16 @@ function getWeekdayLabel(day: number) {
 }
 
 function createBlankEvent(date: string, people: Person[] = initialPeople, jamDay = defaultSettings.jamDay): JamEvent {
+  const defaultBandMemberIds = defaultBlankEventBandMemberIds.filter((id) =>
+    people.some((person) => person.id === id && person.kind === "member" && person.active !== false),
+  );
+
   return {
     id: date,
     date,
     title: `${getWeekdayLabel(jamDay)} Jam Night`,
     status: "draft",
-    bandMemberIds: people.filter((person) => person.kind === "member" && person.active !== false).map((person) => person.id),
+    bandMemberIds: defaultBandMemberIds,
     guests: [],
   };
 }
