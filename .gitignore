@@ -3,7 +3,6 @@ dist
 .env.local
 .env
 .DS_Store
-convex/_generated
 .convex
 .npm-cache
 .playwright-browsers
