@@ -91,4 +91,11 @@ export default defineSchema({
     value: v.any(),
     updatedAt: v.number(),
   }).index("by_key", ["key"]),
+
+  appDataBackups: defineTable({
+    label: v.string(),
+    value: v.any(),
+    source: v.union(v.literal("manual"), v.literal("daily"), v.literal("pre-restore")),
+    createdAt: v.number(),
+  }).index("by_createdAt", ["createdAt"]),
 });

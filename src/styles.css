@@ -786,6 +786,42 @@ label select {
   gap: 8px;
 }
 
+.backup-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.backup-item {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 10px;
+  align-items: center;
+  padding: 12px;
+  border: 1px solid rgba(255, 184, 78, 0.18);
+  border-radius: 8px;
+  background: rgba(255, 184, 78, 0.05);
+}
+
+.backup-item div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.backup-item strong {
+  color: #f7efe0;
+}
+
+.backup-item span,
+.backup-item small {
+  color: #b9aa8b;
+}
+
+.backup-item small {
+  line-height: 1.35;
+}
+
 .import-button {
   display: grid;
   place-items: center;

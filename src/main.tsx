@@ -106,6 +106,17 @@ type AppData = {
   event?: JamEvent;
 };
 
+type BackupSummary = {
+  id: string;
+  label: string;
+  source: "manual" | "daily" | "pre-restore";
+  createdAt: number;
+  eventCount: number;
+  peopleCount: number;
+  songIdeaCount: number;
+  eventSongCount: number;
+};
+
 const defaultSettings: AppSettings = {
   songsPerGuest: 3,
   jamDay: 2,
@@ -499,6 +510,22 @@ function downloadTextFile(filename: string, contents: string, type = "text/plain
   URL.revokeObjectURL(url);
 }
 
+function getBackupSourceLabel(source: BackupSummary["source"]) {
+  if (source === "daily") return "Daily backup";
+  if (source === "pre-restore") return "Before restore";
+  return "Manual backup";
+}
+
+function formatBackupDate(createdAt: number) {
+  return new Date(createdAt).toLocaleString([], {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
 function csvCell(value: unknown) {
   const text = String(value ?? "");
   return `"${text.replace(/"/g, '""')}"`;
@@ -520,10 +547,23 @@ type AppContentProps = {
   saveRemote?: (args: { value: AppData }) => Promise<unknown>;
   verifyEditPin?: (args: { pin: string }) => Promise<boolean>;
   changeEditPin?: (args: { currentPin: string; nextPin: string }) => Promise<boolean>;
+  backups?: BackupSummary[];
+  createBackup?: () => Promise<unknown>;
+  restoreBackup?: (backupId: string) => Promise<AppData | false | null>;
   syncMode: "local" | "convex";
 };
 
-function AppContent({ remoteData, remoteReady, saveRemote, verifyEditPin, changeEditPin, syncMode }: AppContentProps) {
+function AppContent({
+  remoteData,
+  remoteReady,
+  saveRemote,
+  verifyEditPin,
+  changeEditPin,
+  backups,
+  createBackup,
+  restoreBackup,
+  syncMode,
+}: AppContentProps) {
   const initialData = useMemo(loadInitialData, []);
   const [tab, setTab] = useState<Tab>("calendar");
   const [people, setPeople] = useState(initialData.people);
@@ -947,6 +987,28 @@ function AppContent({ remoteData, remoteReady, saveRemote, verifyEditPin, change
     if (patch.jamDay !== undefined) addActivity("Changed jam night day", `Calendar now shows ${getWeekdayLabel(Number(patch.jamDay))} events.`, "settings");
   }
 
+  async function restoreBackupSnapshot(backupId: string) {
+    if (!restoreBackup) return false;
+    const restored = await restoreBackup(backupId);
+    if (!restored) return false;
+
+    const normalized = normalizeAppData(restored);
+    const signature = getAppDataSignature(normalized);
+    setPeople(normalized.people);
+    setEvents(normalized.events);
+    setSongBank(normalized.songBank || []);
+    setSettings(normalized.settings || defaultSettings);
+    setActivityLog(normalized.activityLog || []);
+    setChartOrder(normalized.chartOrder || []);
+    lastSavedSignature.current = signature;
+    lastAppliedRemoteSignature.current = signature;
+    setSaveStatus("saved");
+    setLastSavedAt(new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));
+    setSyncNotice("Backup restored");
+    window.setTimeout(() => setSyncNotice(""), 3000);
+    return true;
+  }
+
   function savePerson(person: Person) {
     if (!isEditUnlocked) {
       setIsUnlockOpen(true);
@@ -1317,6 +1379,9 @@ function AppContent({ remoteData, remoteReady, saveRemote, verifyEditPin, change
                 onUpdateSettings={updateSettings}
                 onImportData={importAppData}
                 onChangePin={changeEditPin}
+                backups={backups}
+                onCreateBackup={createBackup}
+                onRestoreBackup={restoreBackupSnapshot}
               />
             )}
           </>
@@ -3229,6 +3294,9 @@ function SettingsView({
   onUpdateSettings,
   onImportData,
   onChangePin,
+  backups,
+  onCreateBackup,
+  onRestoreBackup,
 }: {
   syncMode: "local" | "convex";
   remoteReady: boolean;
@@ -3243,11 +3311,16 @@ function SettingsView({
   onUpdateSettings: (patch: Partial<AppSettings>) => void;
   onImportData: (data: AppData) => void;
   onChangePin?: (args: { currentPin: string; nextPin: string }) => Promise<boolean>;
+  backups?: BackupSummary[];
+  onCreateBackup?: () => Promise<unknown>;
+  onRestoreBackup?: (backupId: string) => Promise<boolean>;
 }) {
   const [currentPin, setCurrentPin] = useState("");
   const [nextPin, setNextPin] = useState("");
   const [pinMessage, setPinMessage] = useState("");
   const [songLimit, setSongLimit] = useState(String(settings.songsPerGuest));
+  const [backupMessage, setBackupMessage] = useState("");
+  const [backupBusyId, setBackupBusyId] = useState<string | null>(null);
 
   React.useEffect(() => {
     setSongLimit(String(settings.songsPerGuest));
@@ -3327,6 +3400,37 @@ function SettingsView({
     );
   }
 
+  async function createServerBackup() {
+    if (!canEdit || !onCreateBackup) return;
+    setBackupBusyId("create");
+    setBackupMessage("");
+    try {
+      await onCreateBackup();
+      setBackupMessage("Backup created.");
+    } catch {
+      setBackupMessage("Backup could not be created.");
+    } finally {
+      setBackupBusyId(null);
+    }
+  }
+
+  async function restoreServerBackup(backup: BackupSummary) {
+    if (!canEdit || !onRestoreBackup) return;
+    const didConfirm = window.confirm(`Restore this backup?\n\n${formatBackupDate(backup.createdAt)}\n\nThis will replace the live app data. A safety backup will be made first.`);
+    if (!didConfirm) return;
+
+    setBackupBusyId(backup.id);
+    setBackupMessage("");
+    try {
+      const didRestore = await onRestoreBackup(backup.id);
+      setBackupMessage(didRestore ? "Backup restored." : "Backup could not be restored.");
+    } catch {
+      setBackupMessage("Backup could not be restored.");
+    } finally {
+      setBackupBusyId(null);
+    }
+  }
+
   async function importJsonFile(file: File | undefined) {
     if (!file) return;
     try {
@@ -3373,6 +3477,34 @@ function SettingsView({
           <button className="ghost-button" onClick={exportEventSongsCsv}>Event songs CSV</button>
           <button className="ghost-button" onClick={exportPeopleCsv}>People CSV</button>
           <button className="ghost-button" onClick={exportIdeasCsv}>Song ideas CSV</button>
+        </div>
+      </div>
+      <div className="panel">
+        <h3>Automatic Backups</h3>
+        <p className="helper">
+          Convex keeps a daily snapshot at 2am and stores the latest 90 backups. Create a manual backup before big edits or before copying/resetting events.
+        </p>
+        <button className="primary-button" disabled={!canEdit || !onCreateBackup || backupBusyId === "create"} onClick={() => void createServerBackup()}>
+          <Download size={16} />
+          {backupBusyId === "create" ? "Creating..." : "Create Backup Now"}
+        </button>
+        {backupMessage && <p className="helper">{backupMessage}</p>}
+        <div className="backup-list">
+          {(backups || []).length === 0 && <p className="helper">No server backups yet. The first daily backup will appear after the next scheduled run.</p>}
+          {(backups || []).map((backup) => (
+            <div className="backup-item" key={backup.id}>
+              <div>
+                <strong>{getBackupSourceLabel(backup.source)}</strong>
+                <span>{formatBackupDate(backup.createdAt)}</span>
+                <small>
+                  {backup.eventCount} events · {backup.eventSongCount} event songs · {backup.peopleCount} people · {backup.songIdeaCount} ideas
+                </small>
+              </div>
+              <button className="ghost-button compact-action" disabled={!canEdit || !onRestoreBackup || backupBusyId === backup.id} onClick={() => void restoreServerBackup(backup)}>
+                {backupBusyId === backup.id ? "Restoring..." : "Restore"}
+              </button>
+            </div>
+          ))}
         </div>
       </div>
       <UserManual />
@@ -3522,9 +3654,12 @@ createRoot(document.getElementById("root")!).render(
 
 function ConvexApp() {
   const remoteData = useQuery(api.appData.get) as AppData | null | undefined;
+  const backups = useQuery(api.appData.listBackups) as BackupSummary[] | undefined;
   const saveRemote = useMutation(api.appData.save);
   const verifyEditPin = useMutation(api.appData.verifyEditPin);
   const changeEditPin = useMutation(api.appData.changeEditPin);
+  const createBackupRemote = useMutation(api.appData.createBackup);
+  const restoreBackupRemote = useMutation(api.appData.restoreBackup);
 
   return (
     <AppContent
@@ -3533,6 +3668,9 @@ function ConvexApp() {
       saveRemote={saveRemote}
       verifyEditPin={verifyEditPin}
       changeEditPin={changeEditPin}
+      backups={backups}
+      createBackup={() => createBackupRemote({})}
+      restoreBackup={(backupId) => restoreBackupRemote({ backupId: backupId as never }) as Promise<AppData | false | null>}
       syncMode="convex"
     />
   );
