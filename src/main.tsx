@@ -75,7 +75,7 @@ type JamEvent = {
   notes?: string;
 };
 
-type EventStatus = "draft" | "in_progress" | "ready" | "published" | "complete" | "saved";
+type EventStatus = "draft" | "in_progress" | "ready" | "published" | "complete" | "archived" | "saved";
 
 type SongSuggestion = {
   title: string;
@@ -152,6 +152,7 @@ const eventStatuses: { id: Exclude<EventStatus, "saved">; label: string; helper:
   { id: "in_progress", label: "In Progress", helper: "Songs and guests are being added" },
   { id: "ready", label: "Ready", helper: "Lineup looks good" },
   { id: "complete", label: "Complete", helper: "Night has finished" },
+  { id: "archived", label: "Archived", helper: "Hidden from the main calendar" },
 ];
 
 const initialPeople: Person[] = [
@@ -310,7 +311,7 @@ function getSongChartKey(title: string, artist?: string) {
 
 function normalizeEventStatus(status: EventStatus | string | undefined): Exclude<EventStatus, "saved"> {
   if (status === "published") return "ready";
-  if (status === "in_progress" || status === "ready" || status === "complete") return status;
+  if (status === "in_progress" || status === "ready" || status === "complete" || status === "archived") return status;
   return "draft";
 }
 
@@ -530,6 +531,25 @@ function formatBackupDate(createdAt: number) {
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+function getLatestBackup(backups: BackupSummary[] | undefined) {
+  return (backups || [])[0];
+}
+
+function getBackupHealthText(backups: BackupSummary[] | undefined) {
+  const latest = getLatestBackup(backups);
+  if (!latest) return "No server backup yet";
+  const source = latest.source === "daily" ? "automatic" : latest.source === "pre-restore" ? "safety" : "manual";
+  return `Last ${source} backup: ${formatBackupDate(latest.createdAt)}`;
+}
+
+function getSaveStatusText(saveStatus: SaveStatus, syncMode: "local" | "convex", lastSavedAt: string, syncNotice = "") {
+  if (syncNotice) return syncNotice;
+  if (saveStatus === "saving") return "Saving online...";
+  if (saveStatus === "error") return "Save failed - tap Retry";
+  const savedText = syncMode === "convex" ? "Saved online" : "Saved locally";
+  return lastSavedAt ? `${savedText} at ${lastSavedAt}` : savedText;
 }
 
 function csvCell(value: unknown) {
@@ -1057,6 +1077,32 @@ function AppContent({
     addActivity("Changed event status", `${formatEventDate(event.date)} marked as ${getEventStatusMeta(status).label}.`);
   }
 
+  function archiveCompletedPastEvents() {
+    if (!isEditUnlocked) {
+      setIsUnlockOpen(true);
+      return;
+    }
+    const today = getTodayDateStamp();
+    const archiveableCount = events.filter((candidate) => candidate.date < today && normalizeEventStatus(candidate.status) === "complete").length;
+    if (archiveableCount === 0) {
+      setSyncNotice("No completed past events to archive");
+      window.setTimeout(() => setSyncNotice(""), 3000);
+      return;
+    }
+    const didConfirm = window.confirm(`Archive ${archiveableCount} completed past event${archiveableCount === 1 ? "" : "s"}? They will be hidden from the main Calendar but will remain in History.`);
+    if (!didConfirm) return;
+    setEvents((current) =>
+      current.map((candidate) =>
+        candidate.date < today && normalizeEventStatus(candidate.status) === "complete"
+          ? { ...candidate, status: "archived" }
+          : candidate,
+      ),
+    );
+    addActivity("Archived old events", `${archiveableCount} completed past event${archiveableCount === 1 ? "" : "s"} archived.`, "settings");
+    setSyncNotice("Completed past events archived");
+    window.setTimeout(() => setSyncNotice(""), 3000);
+  }
+
   function updateEventNotes(notes: string) {
     if (!isEditUnlocked) return;
     setEvent((current) => ({ ...current, notes }));
@@ -1388,6 +1434,7 @@ function AppContent({
                 backups={backups}
                 onCreateBackup={createBackup}
                 onRestoreBackup={restoreBackupSnapshot}
+                onArchiveCompletedPastEvents={archiveCompletedPastEvents}
               />
             )}
           </>
@@ -1441,10 +1488,15 @@ function CalendarView({
   const eventDates = getEventDates(currentMonth, jamDay);
   const today = getTodayDateStamp();
   const [isJumpOpen, setIsJumpOpen] = useState(false);
+  const [showArchived, setShowArchived] = useState(false);
   const [jumpYear, setJumpYear] = useState(currentMonth.slice(0, 4));
   const [jumpMonth, setJumpMonth] = useState(currentMonth.slice(5, 7));
   const currentYear = Number(currentMonth.slice(0, 4));
   const yearOptions = Array.from({ length: 9 }, (_, index) => currentYear - 2 + index);
+  const archivedCount = eventDates.filter((date) => {
+    const event = events.find((candidate) => candidate.id === date);
+    return normalizeEventStatus(event?.status) === "archived";
+  }).length;
 
   function openMonthPicker() {
     setJumpYear(currentMonth.slice(0, 4));
@@ -1474,16 +1526,27 @@ function CalendarView({
         </span>
       </div>
 
+      {archivedCount > 0 && (
+        <div className="calendar-filter">
+          <span>{archivedCount} archived event{archivedCount === 1 ? "" : "s"} hidden</span>
+          <button className="ghost-button compact-action" onClick={() => setShowArchived((current) => !current)}>
+            {showArchived ? "Hide archived" : "Show archived"}
+          </button>
+        </div>
+      )}
+
       <div className="event-list">
         {eventDates.map((date) => {
           const event = events.find((candidate) => candidate.id === date);
+          const isArchived = normalizeEventStatus(event?.status) === "archived";
+          if (isArchived && !showArchived) return null;
           const isSaved = Boolean(event);
           const isPast = date < today;
           const songCount = event?.guests.reduce((total, guest) => total + guest.songs.length, 0) || 0;
           const bandMembers = event?.bandMemberIds.map((id) => getPerson(people, id)) || [];
           const status = getEventStatusMeta(event?.status);
           return (
-            <button className={`event-card ${isSaved ? "is-active" : ""} ${isPast ? "is-past" : ""}`} key={date} onClick={() => onOpenEvent(date)}>
+            <button className={`event-card ${isSaved ? "is-active" : ""} ${isPast ? "is-past" : ""} ${isArchived ? "is-archived" : ""}`} key={date} onClick={() => onOpenEvent(date)}>
               <span>
                 <strong>{formatEventDate(date)}</strong>
                 <small>{isPast ? "Past event" : `${getWeekdayLabel(jamDay)} Jam Night`}</small>
@@ -1612,6 +1675,7 @@ function EventDetail({
   const sortedGuests = [...event.guests].sort((a, b) => a.order - b.order);
   const availableMembers = people.filter((person) => person.kind === "member");
   const currentStatus = normalizeEventStatus(event.status);
+  const saveStatusText = getSaveStatusText(saveStatus, syncMode, lastSavedAt, syncNotice);
 
   return (
     <section className="screen event-detail">
@@ -1621,18 +1685,7 @@ function EventDetail({
         </button>
         <span>
           <h2>{event.title}</h2>
-          <small>
-            {formatEventDate(event.date)} ·{" "}
-            {syncNotice ||
-              (saveStatus === "saving"
-              ? "Saving..."
-              : saveStatus === "error"
-                ? "Save failed"
-                : syncMode === "convex"
-                  ? "Synced online"
-                  : "Saved locally")}
-            {lastSavedAt ? ` at ${lastSavedAt}` : ""}
-          </small>
+          <small>{formatEventDate(event.date)} · {saveStatusText}</small>
         </span>
         <button className="ghost-button compact-action" onClick={canEdit ? onSaveNow : onRequestUnlock}>
           {saveStatus === "saving" ? "Saving" : saveStatus === "saved" ? "Saved" : "Retry"}
@@ -3303,6 +3356,7 @@ function SettingsView({
   backups,
   onCreateBackup,
   onRestoreBackup,
+  onArchiveCompletedPastEvents,
 }: {
   syncMode: "local" | "convex";
   remoteReady: boolean;
@@ -3320,6 +3374,7 @@ function SettingsView({
   backups?: BackupSummary[];
   onCreateBackup?: () => Promise<unknown>;
   onRestoreBackup?: (backupId: string) => Promise<boolean>;
+  onArchiveCompletedPastEvents: () => void;
 }) {
   const [currentPin, setCurrentPin] = useState("");
   const [nextPin, setNextPin] = useState("");
@@ -3327,6 +3382,9 @@ function SettingsView({
   const [songLimit, setSongLimit] = useState(String(settings.songsPerGuest));
   const [backupMessage, setBackupMessage] = useState("");
   const [backupBusyId, setBackupBusyId] = useState<string | null>(null);
+  const completedPastEventCount = events.filter((event) => event.date < getTodayDateStamp() && normalizeEventStatus(event.status) === "complete").length;
+  const archivedEventCount = events.filter((event) => normalizeEventStatus(event.status) === "archived").length;
+  const latestBackup = getLatestBackup(backups);
 
   React.useEffect(() => {
     setSongLimit(String(settings.songsPerGuest));
@@ -3422,8 +3480,13 @@ function SettingsView({
 
   async function restoreServerBackup(backup: BackupSummary) {
     if (!canEdit || !onRestoreBackup) return;
-    const didConfirm = window.confirm(`Restore this backup?\n\n${formatBackupDate(backup.createdAt)}\n\nThis will replace the live app data. A safety backup will be made first.`);
-    if (!didConfirm) return;
+    const typedConfirmation = window.prompt(
+      `Restore this backup?\n\n${formatBackupDate(backup.createdAt)}\n\nThis will replace the live app data. A safety backup will be made first.\n\nType RESTORE to continue.`,
+    );
+    if (typedConfirmation !== "RESTORE") {
+      setBackupMessage("Restore cancelled.");
+      return;
+    }
 
     setBackupBusyId(backup.id);
     setBackupMessage("");
@@ -3455,7 +3518,7 @@ function SettingsView({
         <p className="helper">
           {syncMode === "convex"
             ? remoteReady
-              ? `Convex sync is connected. Current status: ${saveStatus === "saved" ? "saved" : saveStatus}.`
+              ? getSaveStatusText(saveStatus, syncMode, "")
               : "Connecting to Convex..."
             : "Local-only mode is active until a Convex URL is configured."}
         </p>
@@ -3488,8 +3551,16 @@ function SettingsView({
       <div className="panel">
         <h3>Automatic Backups</h3>
         <p className="helper">
-          Convex keeps a daily snapshot at 2am and stores the latest 90 backups. Create a manual backup before big edits or before copying/resetting events.
+          {getBackupHealthText(backups)}. Convex keeps a daily snapshot at 2am and stores the latest 90 backups.
         </p>
+        {latestBackup && (
+          <div className="backup-health">
+            <strong>{latestBackup.source === "daily" ? "Automatic backup active" : "Backup safety net active"}</strong>
+            <small>
+              {latestBackup.eventCount} events · {latestBackup.eventSongCount} event songs · {latestBackup.peopleCount} people
+            </small>
+          </div>
+        )}
         <button className="primary-button" disabled={!canEdit || !onCreateBackup || backupBusyId === "create"} onClick={() => void createServerBackup()}>
           <Download size={16} />
           {backupBusyId === "create" ? "Creating..." : "Create Backup Now"}
@@ -3512,6 +3583,18 @@ function SettingsView({
             </div>
           ))}
         </div>
+      </div>
+      <div className="panel">
+        <h3>Archive Old Events</h3>
+        <p className="helper">
+          Hide completed past events from the main Calendar while keeping them available in History. Archived events can still be shown from the Calendar filter.
+        </p>
+        <p className="helper">
+          {completedPastEventCount} completed past event{completedPastEventCount === 1 ? "" : "s"} ready to archive · {archivedEventCount} currently archived
+        </p>
+        <button className="ghost-button" disabled={!canEdit || completedPastEventCount === 0} onClick={onArchiveCompletedPastEvents}>
+          Archive completed past events
+        </button>
       </div>
       <UserManual />
       <div className="panel">
