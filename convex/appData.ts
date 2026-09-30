@@ -37,8 +37,18 @@ async function getCurrentAppData(ctx: any) {
 }
 
 async function pruneOldBackups(ctx: any) {
-  const backups = await ctx.db.query("appDataBackups").withIndex("by_createdAt").order("desc").collect();
-  await Promise.all(backups.slice(maxBackups).map((backup: any) => ctx.db.delete(backup._id)));
+  const backups = await ctx.db.query("appDataBackupSummaries").withIndex("by_createdAt").order("desc").collect();
+  const backupsToDelete = backups.slice(maxBackups);
+  for (const backup of backupsToDelete) {
+    const contents = await ctx.db
+      .query("appDataBackupContents")
+      .withIndex("by_backupId", (q: any) => q.eq("backupId", backup._id))
+      .collect();
+    for (const content of contents) {
+      await ctx.db.delete(content._id);
+    }
+    await ctx.db.delete(backup._id);
+  }
 }
 
 async function createBackupRow(ctx: any, source: "manual" | "daily" | "pre-restore", label: string) {
@@ -46,14 +56,31 @@ async function createBackupRow(ctx: any, source: "manual" | "daily" | "pre-resto
   if (!row?.value) return null;
 
   const now = Date.now();
-  const backupId = await ctx.db.insert("appDataBackups", {
+  const summary = summarizeAppData(row.value);
+  const backupId = await ctx.db.insert("appDataBackupSummaries", {
     label,
-    value: row.value,
     source,
+    createdAt: now,
+    ...summary,
+  });
+  await ctx.db.insert("appDataBackupContents", {
+    backupId,
+    value: row.value,
     createdAt: now,
   });
   await pruneOldBackups(ctx);
   return backupId;
+}
+
+async function getBackupValue(ctx: any, backupId: string) {
+  const content = await ctx.db
+    .query("appDataBackupContents")
+    .withIndex("by_backupId", (q: any) => q.eq("backupId", backupId))
+    .first();
+  if (content) return content.value;
+
+  const legacyBackup = await ctx.db.get(backupId as any);
+  return legacyBackup?.value ?? null;
 }
 
 export const get = query({
@@ -70,14 +97,17 @@ export const get = query({
 
 export const listBackups = query({
   args: {},
-  handler: async (ctx) => {
-    const backups = await ctx.db.query("appDataBackups").withIndex("by_createdAt").order("desc").take(30);
-    return backups.map((backup) => ({
+  handler: async (ctx: any) => {
+    const backups = await ctx.db.query("appDataBackupSummaries").withIndex("by_createdAt").order("desc").take(30);
+    return backups.map((backup: any) => ({
       id: backup._id,
       label: backup.label,
       source: backup.source,
       createdAt: backup.createdAt,
-      ...summarizeAppData(backup.value),
+      eventCount: backup.eventCount,
+      peopleCount: backup.peopleCount,
+      songIdeaCount: backup.songIdeaCount,
+      eventSongCount: backup.eventSongCount,
     }));
   },
 });
@@ -111,18 +141,18 @@ export const save = mutation({
 
 export const createBackup = mutation({
   args: {},
-  handler: async (ctx) => {
+  handler: async (ctx: any) => {
     return await createBackupRow(ctx, "manual", `Manual backup - ${new Date().toISOString()}`);
   },
 });
 
 export const restoreBackup = mutation({
   args: {
-    backupId: v.id("appDataBackups"),
+    backupId: v.string(),
   },
-  handler: async (ctx, args) => {
-    const backup = await ctx.db.get(args.backupId);
-    if (!backup) return false;
+  handler: async (ctx: any, args) => {
+    const backupValue = await getBackupValue(ctx, args.backupId);
+    if (!backupValue) return false;
 
     await createBackupRow(ctx, "pre-restore", `Before restore - ${new Date().toISOString()}`);
 
@@ -130,24 +160,24 @@ export const restoreBackup = mutation({
     const existing = await getCurrentAppData(ctx);
     if (existing) {
       await ctx.db.patch(existing._id, {
-        value: backup.value,
+        value: backupValue,
         updatedAt: now,
       });
-      return backup.value;
+      return backupValue;
     }
 
     await ctx.db.insert("settings", {
       key: appDataKey,
-      value: backup.value,
+      value: backupValue,
       updatedAt: now,
     });
-    return backup.value;
+    return backupValue;
   },
 });
 
 export const createDailyBackup = internalMutation({
   args: {},
-  handler: async (ctx) => {
+  handler: async (ctx: any) => {
     return await createBackupRow(ctx, "daily", `Daily backup - ${new Date().toISOString()}`);
   },
 });

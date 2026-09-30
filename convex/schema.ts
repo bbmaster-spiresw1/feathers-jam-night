@@ -98,4 +98,20 @@ export default defineSchema({
     source: v.union(v.literal("manual"), v.literal("daily"), v.literal("pre-restore")),
     createdAt: v.number(),
   }).index("by_createdAt", ["createdAt"]),
+
+  appDataBackupSummaries: defineTable({
+    label: v.string(),
+    source: v.union(v.literal("manual"), v.literal("daily"), v.literal("pre-restore")),
+    createdAt: v.number(),
+    eventCount: v.number(),
+    peopleCount: v.number(),
+    songIdeaCount: v.number(),
+    eventSongCount: v.number(),
+  }).index("by_createdAt", ["createdAt"]),
+
+  appDataBackupContents: defineTable({
+    backupId: v.string(),
+    value: v.any(),
+    createdAt: v.number(),
+  }).index("by_backupId", ["backupId"]),
 });
