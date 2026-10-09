@@ -552,6 +552,13 @@ function getSaveStatusText(saveStatus: SaveStatus, syncMode: "local" | "convex",
   return lastSavedAt ? `${savedText} at ${lastSavedAt}` : savedText;
 }
 
+function getGuestTypeLabel(person: Person) {
+  if (person.kind === "member") return "Band Member";
+  if (person.kind === "band") return "Band";
+  if (person.kind === "showcase") return "Showcase Band";
+  return "";
+}
+
 function csvCell(value: unknown) {
   const text = String(value ?? "");
   return `"${text.replace(/"/g, '""')}"`;
@@ -2372,11 +2379,12 @@ function PdfPreviewModal({ event, people, onClose }: { event: JamEvent; people: 
             <h2>Guests</h2>
             {sortedGuests.map((guest, guestIndex) => {
               const person = getPerson(people, guest.personId);
+              const guestTypeLabel = getGuestTypeLabel(person);
               return (
                 <div className="pdf-guest" key={guest.id}>
                   <div className="pdf-guest-heading">
                     <h3>{guestIndex + 1}. {person.name}</h3>
-                    {person.kind === "member" && <em>[Band Member]</em>}
+                    {guestTypeLabel && <em>[{guestTypeLabel}]</em>}
                   </div>
                   <div className="pdf-song-list">
                     {guest.songs.map((song, songIndex) => (
@@ -2413,6 +2421,7 @@ function getRunningOrderText(event: JamEvent, people: Person[]) {
   const guestLines = sortedGuests
     .map((guest, guestIndex) => {
       const person = getPerson(people, guest.personId);
+      const guestTypeLabel = getGuestTypeLabel(person);
       const songs = guest.songs
         .map((song, songIndex) => {
           const key = song.key ? ` - Key of ${song.key}` : "";
@@ -2424,7 +2433,7 @@ function getRunningOrderText(event: JamEvent, people: Person[]) {
         })
         .join("\n");
       const guestNotes = guest.notes?.trim() ? `\n  Guest notes: ${guest.notes.trim()}` : "";
-      return `${guestIndex + 1}. ${person.name}\n${songs || "  No songs added yet."}${guestNotes}`;
+      return `${guestIndex + 1}. ${person.name}${guestTypeLabel ? ` [${guestTypeLabel}]` : ""}\n${songs || "  No songs added yet."}${guestNotes}`;
     })
     .join("\n\n");
 
@@ -2472,7 +2481,8 @@ function printPdfDocument(event: JamEvent, people: Person[]) {
   const guestRows = sortedGuests
     .map((guest, guestIndex) => {
       const person = getPerson(people, guest.personId);
-      const badge = person.kind === "member" ? "<em>[Band Member]</em>" : "";
+      const guestTypeLabel = getGuestTypeLabel(person);
+      const badge = guestTypeLabel ? `<em>[${escapeHtml(guestTypeLabel)}]</em>` : "";
       const songs = guest.songs
         .map((song, songIndex) => {
           const key = song.key ? ` - Key of ${escapeHtml(song.key)}` : "";
